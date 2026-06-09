@@ -1,59 +1,6 @@
 import { init } from 'https://esm.sh/@nimiq/mini-app-sdk';
 import HubApi from 'https://esm.sh/@nimiq/hub-api';
 
-// ==========================================
-// FORCE HIDE OLD HTML ELEMENTS & ADD BEAUTIFUL HUD STYLES
-// ==========================================
-const style = document.createElement('style');
-style.innerHTML = `
-    footer, .footer, #footer, [class*="footer"], [id*="footer"], 
-    .joystick, #joystick, [class*="joystick"], [id*="joystick"],
-    #joystickZone, #joystickBase, #joystickKnob,
-    .snake-arena-branding, .branding, [class*="SnakeArena"] {
-        display: none !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-    }
-    #ui {
-        position: fixed;
-        top: 20px;
-        left: 20px;
-        z-index: 40;
-        background: rgba(15, 23, 42, 0.75) !important;
-        backdrop-filter: blur(8px);
-        padding: 12px 20px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-    }
-    #ui, #ui * {
-        color: #ffffff !important;
-        font-family: system-ui, -apple-system, sans-serif;
-    }
-    @keyframes spin { 
-        to { transform: rotate(360deg); } 
-    }
-`;
-document.head.appendChild(style);
-
-// ==========================================
-// ESCAPING UI OVERLAY
-// ==========================================
-const escapingOverlay = document.createElement('div');
-escapingOverlay.innerHTML = `
-    <div id="payoutModal" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); z-index: 50; flex-direction: column; align-items: center; justify-content: center; color: white; font-family: sans-serif;">
-        <div style="width: 50px; height: 50px; border: 5px solid #6366f1; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;"></div>
-        <h2 style="font-size: 24px; font-weight: bold; margin: 0;">Escaping...</h2>
-        <p style="color: #cbd5e1; margin-top: 10px;">Processing blockchain payout. Do not close the window!</p>
-    </div>
-`;
-document.body.appendChild(escapingOverlay);
-const payoutModal = document.getElementById('payoutModal');
-
-// ==========================================
-// CONFIG & DOM CONFIGURATION
-// ==========================================
-const SERVER_WALLET = 'NQ78 MYM9 T9BM ESYK MV40 YTN2 VTR4 J0UC EDDS';
 const MAP_SIZE = 2000;
 
 const socket = io({
@@ -63,33 +10,24 @@ const socket = io({
     timeout: 10000
 });
 
+// DOM Elements
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const menu = document.getElementById('menu');
 const ui = document.getElementById('ui');
-
-let balanceDisplay = document.getElementById('balance');
-if (ui && !balanceDisplay) {
-    ui.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; letter-spacing: 0.05em;">
-            <span>EARNED:</span>
-            <span id="balance" style="color: #818cf8 !important; font-size: 20px; font-family: monospace; font-weight: 700;">0.000</span>
-            <span style="color: #94a3b8 !important; font-size: 12px;">NIM</span>
-        </div>
-    `;
-    balanceDisplay = document.getElementById('balance');
-}
-
+const balanceDisplay = document.getElementById('balance');
 const gameContainer = document.getElementById('gameContainer');
 const payBtn = document.getElementById('payBtn');
 const hubBtn = document.getElementById('hubBtn');
 const statusText = document.querySelector('#status .status-text');
 const statusSpinner = document.querySelector('#status .spinner');
+
 const leaderboard = document.getElementById('leaderboard');
 const lbContent = document.getElementById('lbContent');
 const minimap = document.getElementById('minimap');
 const minimapCanvas = document.getElementById('minimapCanvas');
 const minimapCtx = minimapCanvas.getContext('2d');
+
 const gameOverModal = document.getElementById('gameOverModal');
 const modalIcon = document.getElementById('modalIcon');
 const modalTitle = document.getElementById('modalTitle');
@@ -97,21 +35,27 @@ const modalMessage = document.getElementById('modalMessage');
 const modalBalance = document.getElementById('modalBalance');
 const modalLength = document.getElementById('modalLength');
 const statPlayers = document.getElementById('statPlayers');
+
+const payoutModal = document.getElementById('payoutModal');
+const usernameModal = document.getElementById('usernameModal');
+const usernameInput = document.getElementById('usernameInput');
+const saveUsernameBtn = document.getElementById('saveUsernameBtn');
+
 const bgCanvas = document.getElementById('bgCanvas');
 const bgCtx = bgCanvas.getContext('2d');
 
-// ==========================================
 // STATE
-// ==========================================
 let myId = null;
 let gameState = null;
 let nimiq = null;
-let playerAddress = null;
+let currentWallet = null;
+let currentUsername = null;
 let isGameRunning = false;
 let animationFrameId = null;
 let particles = [];
 let foodAnimations = new Map();
 let lastBalance = 0;
+let dbLeaderboard = []; 
 
 let cw = window.innerWidth; 
 let ch = window.innerHeight;
@@ -121,7 +65,6 @@ let targetX = cw / 2;
 let targetY = ch / 2;
 let localAngle = 0;
 let interpolatedPlayers = {};
-let hasInput = false; // Tracks if mobile/desktop has made any initial movement interaction
 
 function stringToColor(str) {
     let hash = 0;
@@ -129,9 +72,7 @@ function stringToColor(str) {
     return `hsl(${Math.abs(hash) % 360}, 80%, 60%)`;
 }
 
-// ==========================================
-// BACKGROUND ANIMATION
-// ==========================================
+// BACKGROUND
 let bgParticles = [];
 function initBackground() {
     bgCanvas.width = window.innerWidth;
@@ -150,19 +91,15 @@ function initBackground() {
         });
     }
 }
-
 function drawBackground() {
     bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
     const time = Date.now() * 0.001;
-
     bgParticles.forEach(p => {
-        p.x += p.vx;
-        p.y += p.vy;
+        p.x += p.vx; p.y += p.vy;
         if (p.x < 0) p.x = bgCanvas.width;
         if (p.x > bgCanvas.width) p.x = 0;
         if (p.y < 0) p.y = bgCanvas.height;
         if (p.y > bgCanvas.height) p.y = 0;
-
         const pulse = Math.sin(time * p.pulseSpeed * 10) * 0.3 + 0.7;
         bgCtx.beginPath();
         bgCtx.arc(p.x, p.y, p.radius * pulse, 0, Math.PI * 2);
@@ -174,9 +111,7 @@ function drawBackground() {
     requestAnimationFrame(drawBackground);
 }
 
-// ==========================================
-// CANVAS RESIZING
-// ==========================================
+// CANVAS RESIZE
 function resizeCanvas() {
     cw = window.innerWidth;
     ch = window.innerHeight;
@@ -202,9 +137,7 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 
-// ==========================================
-// NIMIQ SDK SETUP
-// ==========================================
+// NIMIQ SDK
 async function setupMiniApp() {
     try {
         if(statusText) statusText.innerText = "Detecting environment...";
@@ -221,16 +154,11 @@ async function setupMiniApp() {
         if(statusText) statusText.innerText = "Nimiq connected.";
         if(statusSpinner) statusSpinner.style.display = 'none';
     } catch (error) {
-        console.log("SDK Init Error (Desktop detected):", error);
-        
         if(payBtn) payBtn.style.display = 'none'; 
-        
         if(hubBtn) {
             hubBtn.style.display = 'block'; 
-            hubBtn.innerHTML = 'Join Free via Nimiq Hub';
             hubBtn.addEventListener('click', payWithHub);
         }
-        
         if(statusText) statusText.innerText = "Ready to play on Desktop.";
         if(statusSpinner) statusSpinner.style.display = 'none';
     }
@@ -239,19 +167,49 @@ async function setupMiniApp() {
 function resetUIOnError(msg) {
     if(statusText) statusText.innerText = msg;
     if(statusSpinner) statusSpinner.style.display = 'none';
-    if(hubBtn) {
-        hubBtn.disabled = false;
-        hubBtn.innerText = 'Join Free via Nimiq Hub';
-    }
-    if(payBtn) {
-        payBtn.disabled = false;
-        payBtn.innerText = 'Join Free via Nimiq Pay';
-    }
+    if(hubBtn) { hubBtn.disabled = false; hubBtn.innerText = 'Join Free via Nimiq Hub'; }
+    if(payBtn) { payBtn.disabled = false; payBtn.innerText = 'Join Free via Nimiq Pay'; }
     payoutModal.style.display = 'none';
 }
 
+function executeGameJoin(address) {
+    socket.emit('joinGame', { txHash: 'free_entry_' + Math.random().toString(36).substring(7), walletAddress: address });
+    setTimeout(() => {
+        if (!isGameRunning && statusText.innerText.includes("Deploying")) {
+            statusText.innerText = "Network sync delayed. Please wait...";
+        }
+    }, 8000);
+}
+
+socket.on('user_status', (data) => {
+    if (data.exists) {
+        currentUsername = data.username;
+        executeGameJoin(currentWallet);
+    } else {
+        usernameModal.classList.add('active');
+        statusText.innerText = "Claiming username...";
+        statusSpinner.style.display = 'none';
+    }
+});
+
+saveUsernameBtn.addEventListener('click', () => {
+    const username = usernameInput.value.trim();
+    if (username.length > 0 && currentWallet) {
+        socket.emit('register_user', { wallet_address: currentWallet, username: username });
+        currentUsername = username;
+        usernameModal.classList.remove('active');
+        
+        if(statusText) statusText.innerText = "Deploying...";
+        if(statusSpinner) statusSpinner.style.display = 'inline-block';
+        executeGameJoin(currentWallet);
+    }
+});
+
 async function payWithHub() {
     try {
+        if (!socket.id) return resetUIOnError("Disconnected from server.");
+        hubBtn.disabled = true;
+
         const hubUrl = 'https://hub.nimiq.com'; 
         const hubApi = new HubApi(hubUrl);
         
@@ -262,25 +220,17 @@ async function payWithHub() {
             localStorage.setItem('nimiq_address', userAddress);
         }
 
-        if(statusText) statusText.innerText = "Deploying...";
-        
-        socket.emit('joinGame', { 
-            txHash: 'free_entry_' + Math.random().toString(36).substring(7), 
-            walletAddress: userAddress 
-        });
+        currentWallet = userAddress;
+        socket.emit('check_user', currentWallet);
 
-    } catch (e) {
-        console.error(e);
-        resetUIOnError("Login failed or cancelled.");
-    }
+    } catch (e) { resetUIOnError("Login failed or cancelled."); }
 }
 
 if(payBtn) {
     payBtn.addEventListener('click', async () => {
         if (!socket.id) return resetUIOnError("Disconnected from server.");
-        
         payBtn.disabled = true;
-        if(statusText) statusText.innerText = "Deploying...";
+        if(statusText) statusText.innerText = "Authenticating...";
         if(statusSpinner) statusSpinner.style.display = 'inline-block';
 
         try {
@@ -289,32 +239,17 @@ if(payBtn) {
                 const accounts = await nimiq.listAccounts();
                 if (accounts.length > 0) address = accounts[0];
             }
-            
-            if (!address) throw new Error("Could not detect Nimiq wallet address for payouts.");
+            if (!address) throw new Error("Could not detect Nimiq wallet address.");
 
-            socket.emit('joinGame', { 
-                txHash: 'free_entry_' + Math.random().toString(36).substring(7), 
-                walletAddress: address 
-            });
-            
-            setTimeout(() => {
-                if (!isGameRunning && statusText.innerText.includes("Deploying")) {
-                    statusText.innerText = "Network sync delayed. Please wait...";
-                }
-            }, 8000);
-
-        } catch (e) {
-            console.error("Connection error:", e);
-            resetUIOnError("Failed to join.");
-        }
+            currentWallet = address;
+            socket.emit('check_user', currentWallet);
+        } catch (e) { resetUIOnError("Failed to join."); }
     });
 }
 
 setupMiniApp();
 
-// ==========================================
 // SOCKET EVENTS
-// ==========================================
 socket.on('connect', () => console.log('Connected to server'));
 socket.on('disconnect', () => {
     payoutModal.style.display = 'none';
@@ -324,17 +259,28 @@ socket.on('connect_error', () => resetUIOnError("Server connection failed. Retry
 socket.on('error', (err) => resetUIOnError(err.message || err || "Game server error."));
 socket.on('joinError', (err) => resetUIOnError(err.message || err || "Failed to join game."));
 
+socket.on('leaderboard_update', (topPlayers) => {
+    dbLeaderboard = topPlayers;
+    renderLeaderboard();
+});
+
 socket.on('gameStarted', (player) => {
     myId = player.id;
     isGameRunning = true;
     lastBalance = 0;
-    hasInput = false; // Reset interaction flag on spawn
     payoutModal.style.display = 'none';
 
     if(menu) menu.style.display = 'none';
     if(gameContainer) gameContainer.style.display = 'block';
     if(ui) ui.style.display = 'flex';
+    if(minimap) minimap.style.display = 'block';
     
+    // Ensure leaderboard moves into game container view mentally, though it remains absolute
+    if(leaderboard) {
+        gameContainer.appendChild(leaderboard);
+        leaderboard.style.zIndex = '105';
+    }
+
     targetX = cw / 2;
     targetY = ch / 2;
     interpolatedPlayers = {};
@@ -355,17 +301,12 @@ socket.on('gameState', (state) => {
         lastBalance = newBalance;
         if(balanceDisplay) balanceDisplay.innerText = newBalance.toFixed(3);
     }
-
-    updateLeaderboard();
     updatePlayerCount();
 });
 
 socket.on('playerCount', (count) => { if (statPlayers) statPlayers.innerText = count; });
 
-socket.on('escaping', () => {
-    payoutModal.style.display = 'flex';
-    isGameRunning = false; 
-});
+socket.on('escaping', () => { payoutModal.style.display = 'flex'; isGameRunning = false; });
 
 socket.on('gameOver', (data) => {
     payoutModal.style.display = 'none';
@@ -378,32 +319,25 @@ socket.on('gameOver', (data) => {
     }
 });
 
-// ==========================================
-// UNIFIED INPUT HANDLING (Mouse & Touch)
-// ==========================================
-window.addEventListener('mousemove', (e) => {
-    if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; hasInput = true; }
-});
-window.addEventListener('touchstart', (e) => {
-    if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; hasInput = true; }
-}, { passive: false });
-window.addEventListener('touchmove', (e) => {
-    if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; hasInput = true; }
-}, { passive: false });
+// INPUT HANDLING
+window.addEventListener('mousemove', (e) => { if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; } });
+window.addEventListener('touchstart', (e) => { if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; } }, { passive: false });
+window.addEventListener('touchmove', (e) => { if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; } }, { passive: false });
 
-// ==========================================
 // UI & PARTICLES
-// ==========================================
-function updateLeaderboard() {
-    if (!gameState || !gameState.players || !lbContent) return;
-    const sorted = Object.values(gameState.players).sort((a, b) => b.balance - a.balance).slice(0, 5);
-    lbContent.innerHTML = sorted.map((p, i) => {
-        const isMe = p.id === myId;
-        const name = isMe ? 'YOU' : `P-${p.id.slice(-4).toUpperCase()}`;
+function renderLeaderboard() {
+    if (!lbContent) return;
+    if (dbLeaderboard.length === 0) {
+        lbContent.innerHTML = `<div style="font-size: 12px; color: #94a3b8; opacity: 0.75;">No entries yet</div>`;
+        return;
+    }
+    lbContent.innerHTML = dbLeaderboard.map((p, i) => {
+        const isMe = p.wallet_address === currentWallet;
         return `
-            <div class="flex justify-between items-center px-2 py-1 rounded ${isMe ? 'bg-indigo-600/50 text-white font-bold' : 'text-slate-300'}">
-                <span class="truncate max-w-[100px]">${i+1}. ${name}</span>
-                <span class="text-xs opacity-75">${p.balance.toFixed(2)}</span>
+            <div class="lb-entry ${isMe ? 'me' : ''}">
+                <span class="lb-rank">${i+1}</span>
+                <span class="lb-name">${p.username}</span>
+                <span class="lb-score">${parseFloat(p.earned).toFixed(3)} NIM🟨</span>
             </div>
         `;
     }).join('');
@@ -428,37 +362,24 @@ function spawnParticles(x, y, color, count = 8) {
     for (let i = 0; i < count; i++) {
         const angle = (Math.PI * 2 / count) * i + Math.random() * 0.5;
         const speed = 2 + Math.random() * 3;
-        particles.push({
-            x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-            life: 1, decay: 0.015 + Math.random() * 0.02, size: 2 + Math.random() * 3, color
-        });
+        particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 1, decay: 0.015 + Math.random() * 0.02, size: 2 + Math.random() * 3, color });
     }
 }
 
 function drawParticles(ctx) {
     for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
-        p.x += p.vx; p.y += p.vy;
-        p.life -= p.decay;
+        p.x += p.vx; p.y += p.vy; p.life -= p.decay;
         p.vx *= 0.97; p.vy *= 0.97; p.size *= 0.98;
-
         if (p.life <= 0) { particles.splice(i, 1); continue; }
-
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = p.color;
-        ctx.globalAlpha = p.life;
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.fill();
     }
     ctx.globalAlpha = 1;
 }
 
-// ==========================================
-// AGAR.IO RENDERING ENGINE
-// ==========================================
-function getPlayerRadius(player) {
-    return Math.max(15, Math.sqrt((player.length || player.balance * 100 || 10)) * 5);
-}
+// RENDERING
+function getPlayerRadius(player) { return Math.max(15, Math.sqrt((player.length || player.balance * 100 || 10)) * 5); }
 
 function drawGrid(ctx) {
     ctx.save();
@@ -525,7 +446,6 @@ function drawFood(ctx, food, time) {
     if (!foodAnimations.has(food.id)) foodAnimations.set(food.id, Math.random() * Math.PI * 2);
     const phase = foodAnimations.get(food.id);
     const pulse = Math.sin(time * 0.005 + phase) * 0.2 + 0.8;
-    
     const hash = Math.floor(food.x * 13 + food.y * 31);
     const hue = hash % 360;
 
@@ -554,43 +474,27 @@ function drawCell(ctx, player, isMe) {
         ctx.restore();
     }
     
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(player.x, player.y, r, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
     
-    const grad = ctx.createRadialGradient(
-        player.x - r*0.3, player.y - r*0.3, r*0.1,
-        player.x, player.y, r
-    );
+    const grad = ctx.createRadialGradient(player.x - r*0.3, player.y - r*0.3, r*0.1, player.x, player.y, r);
     grad.addColorStop(0, 'rgba(255,255,255,0.3)');
     grad.addColorStop(1, 'rgba(0,0,0,0.2)');
-    ctx.fillStyle = grad;
-    ctx.fill();
+    ctx.fillStyle = grad; ctx.fill();
 
-    ctx.lineWidth = Math.max(2, r * 0.05);
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.stroke();
+    ctx.lineWidth = Math.max(2, r * 0.05); ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.stroke();
 
     if (r * camera.scale > 15) {
-        ctx.fillStyle = 'white';
-        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-        ctx.lineWidth = 3;
+        ctx.fillStyle = 'white'; ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.lineWidth = 3;
         const fontSize = Math.max(10, r * 0.25);
-        ctx.font = `bold ${fontSize}px Inter, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.font = `bold ${fontSize}px Inter, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         
-        const name = isMe ? 'YOU' : `P-${player.id.slice(-4).toUpperCase()}`;
-        ctx.strokeText(name, player.x, player.y - fontSize*0.4);
-        ctx.fillText(name, player.x, player.y - fontSize*0.4);
+        const name = isMe ? (currentUsername || 'YOU') : `P-${player.id.slice(-4).toUpperCase()}`;
+        ctx.strokeText(name, player.x, player.y - fontSize*0.4); ctx.fillText(name, player.x, player.y - fontSize*0.4);
 
         const visualMass = Math.floor(player.length || player.balance * 100 || 10);
-        
         ctx.font = `bold ${fontSize*0.6}px Space Mono, monospace`;
         const massText = `Mass: ${visualMass}`;
-        ctx.strokeText(massText, player.x, player.y + fontSize*0.8);
-        ctx.fillText(massText, player.x, player.y + fontSize*0.8);
+        ctx.strokeText(massText, player.x, player.y + fontSize*0.8); ctx.fillText(massText, player.x, player.y + fontSize*0.8);
     }
 }
 
@@ -602,20 +506,16 @@ function drawMinimap() {
     if(gameState.exitGate) {
         minimapCtx.beginPath();
         minimapCtx.arc(gameState.exitGate.x * scale, gameState.exitGate.y * scale, Math.max(gameState.exitGate.radius * scale, 4), 0, Math.PI * 2);
-        minimapCtx.fillStyle = 'rgba(0, 230, 255, 0.6)';
-        minimapCtx.fill();
+        minimapCtx.fillStyle = 'rgba(0, 230, 255, 0.6)'; minimapCtx.fill();
     }
 
     Object.values(interpolatedPlayers).forEach(p => {
         const isMe = p.id === myId;
-        minimapCtx.beginPath();
-        minimapCtx.arc(p.x * scale, p.y * scale, isMe ? 3.5 : 2.5, 0, Math.PI * 2);
-        minimapCtx.fillStyle = isMe ? '#fff' : stringToColor(p.id);
-        minimapCtx.fill();
+        minimapCtx.beginPath(); minimapCtx.arc(p.x * scale, p.y * scale, isMe ? 3.5 : 2.5, 0, Math.PI * 2);
+        minimapCtx.fillStyle = isMe ? '#fff' : stringToColor(p.id); minimapCtx.fill();
     });
 
-    minimapCtx.strokeStyle = 'rgba(255,255,255,0.4)';
-    minimapCtx.lineWidth = 1;
+    minimapCtx.strokeStyle = 'rgba(255,255,255,0.4)'; minimapCtx.lineWidth = 1;
     const viewW = (cw / camera.scale) * scale;
     const viewH = (ch / camera.scale) * scale;
     minimapCtx.strokeRect((camera.x * scale) - viewW/2, (camera.y * scale) - viewH/2, viewW, viewH);
@@ -627,76 +527,40 @@ function renderLoop() {
     if (gameState && gameState.players) {
         for (let id in gameState.players) {
             let serverP = gameState.players[id];
-            if (!interpolatedPlayers[id]) {
-                interpolatedPlayers[id] = { ...serverP };
-            } else {
+            if (!interpolatedPlayers[id]) { interpolatedPlayers[id] = { ...serverP }; } 
+            else {
                 interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.3;
                 interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.3;
                 interpolatedPlayers[id].balance = serverP.balance;
                 interpolatedPlayers[id].length = serverP.length;
             }
         }
-        for (let id in interpolatedPlayers) {
-            if (!gameState.players[id]) delete interpolatedPlayers[id];
-        }
+        for (let id in interpolatedPlayers) { if (!gameState.players[id]) delete interpolatedPlayers[id]; }
     }
 
     const me = interpolatedPlayers[myId];
     if (me) {
-        if (!hasInput) {
-            // FIX: If the mobile user hasn't touched the screen yet, instantly lock the 
-            // camera coordinate directly over the cell. No visual lag, no weird calculated vectors.
-            camera.x = me.x;
-            camera.y = me.y;
-        } else {
-            // Normal game tracking calculations run once input is active
-            const screenPlayerX = cw / 2 + (me.x - camera.x) * camera.scale;
-            const screenPlayerY = ch / 2 + (me.y - camera.y) * camera.scale;
-            
-            const dx = targetX - screenPlayerX;
-            const dy = targetY - screenPlayerY;
-            
-            const distance = Math.hypot(dx, dy);
-            const cellRadiusOnScreen = getPlayerRadius(me) * camera.scale;
+        const screenPlayerX = cw / 2 + (me.x - camera.x) * camera.scale;
+        const screenPlayerY = ch / 2 + (me.y - camera.y) * camera.scale;
+        localAngle = Math.atan2(targetY - screenPlayerY, targetX - screenPlayerX);
 
-            const isHoveringCenter = distance < (cellRadiusOnScreen * 0.25);
-            
-            if (!isHoveringCenter) {
-                localAngle = Math.atan2(dy, dx);
-            }
+        const now = Date.now();
+        if (now - lastEmitTime > 15) { lastEmitTime = now; socket.emit('input', { angle: localAngle }); }
 
-            const now = Date.now();
-            if (now - lastEmitTime > 40) {
-                lastEmitTime = now;
-                socket.emit('input', { 
-                    angle: localAngle,
-                    stopMovement: isHoveringCenter
-                });
-            }
-
-            // Smoothly move the camera along with the player cell
-            camera.x += (me.x - camera.x) * 0.1;
-            camera.y += (me.y - camera.y) * 0.1;
-        }
-
+        camera.x += (me.x - camera.x) * 0.1;
+        camera.y += (me.y - camera.y) * 0.1;
         const targetScale = Math.max(0.45, 55 / getPlayerRadius(me));
         camera.scale += (targetScale - camera.scale) * 0.05;
     }
 
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.save();
-    ctx.translate(cw / 2, ch / 2);
-    ctx.scale(camera.scale, camera.scale);
-    ctx.translate(-camera.x, -camera.y);
+    ctx.translate(cw / 2, ch / 2); ctx.scale(camera.scale, camera.scale); ctx.translate(-camera.x, -camera.y);
 
     drawGrid(ctx);
-
-    if (gameState && gameState.exitGate) {
-        drawExitGate(ctx, gameState.exitGate.x, gameState.exitGate.y, gameState.exitGate.radius);
-    }
-
+    if (gameState && gameState.exitGate) drawExitGate(ctx, gameState.exitGate.x, gameState.exitGate.y, gameState.exitGate.radius);
+    
     const time = Date.now();
     if (gameState && gameState.foods) gameState.foods.forEach(f => drawFood(ctx, f, time));
 
@@ -705,7 +569,6 @@ function renderLoop() {
 
     drawParticles(ctx);
     ctx.restore();
-    
     drawMinimap();
     
     animationFrameId = requestAnimationFrame(renderLoop);
