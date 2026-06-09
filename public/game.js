@@ -14,7 +14,6 @@ style.innerHTML = `
         opacity: 0 !important;
         pointer-events: none !important;
     }
-    /* Style the top-left HUD container to look crisp, modern, and high-contrast */
     #ui {
         position: fixed;
         top: 20px;
@@ -27,7 +26,6 @@ style.innerHTML = `
         border: 1px solid rgba(255, 255, 255, 0.15);
         box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
     }
-    /* Force all child text inside the HUD to be white */
     #ui, #ui * {
         color: #ffffff !important;
         font-family: system-ui, -apple-system, sans-serif;
@@ -53,7 +51,7 @@ document.body.appendChild(escapingOverlay);
 const payoutModal = document.getElementById('payoutModal');
 
 // ==========================================
-// CONFIG & DOM CONFIGURATION WITH AUTOMATIC FALLBACKS
+// CONFIG & DOM CONFIGURATION
 // ==========================================
 const SERVER_WALLET = 'NQ78 MYM9 T9BM ESYK MV40 YTN2 VTR4 J0UC EDDS';
 const MAP_SIZE = 2000;
@@ -70,7 +68,6 @@ const ctx = canvas.getContext('2d', { alpha: false });
 const menu = document.getElementById('menu');
 const ui = document.getElementById('ui');
 
-// DEFENSIVE FIX: Automatically inject a gorgeous balance counter if your HTML layout lacks one
 let balanceDisplay = document.getElementById('balance');
 if (ui && !balanceDisplay) {
     ui.innerHTML = `
@@ -116,7 +113,6 @@ let particles = [];
 let foodAnimations = new Map();
 let lastBalance = 0;
 
-// Visual properties & Client-side prediction
 let cw = window.innerWidth; 
 let ch = window.innerHeight;
 let camera = { x: MAP_SIZE/2, y: MAP_SIZE/2, scale: 1 };
@@ -124,11 +120,8 @@ let lastEmitTime = 0;
 let targetX = cw / 2;
 let targetY = ch / 2;
 let localAngle = 0;
-
-// Smooth interpolation for jitter-free rendering
 let interpolatedPlayers = {};
 
-// Colors generator for bots/other players
 function stringToColor(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
@@ -136,7 +129,7 @@ function stringToColor(str) {
 }
 
 // ==========================================
-// BACKGROUND ANIMATION (Landing Page)
+// BACKGROUND ANIMATION
 // ==========================================
 let bgParticles = [];
 function initBackground() {
@@ -206,56 +199,52 @@ function resizeCanvas() {
         initBackground();
     }
 }
-
 window.addEventListener('resize', resizeCanvas);
 
 // ==========================================
-// NIMIQ HUB & SDK SETUP
+// NIMIQ SDK SETUP (FREE ENTRY WITH REAL ADDRESSES)
 // ==========================================
 async function setupMiniApp() {
     try {
         if(statusText) statusText.innerText = "Detecting environment...";
         if(statusSpinner) statusSpinner.style.display = 'inline-block';
         
-        // Attempt Mobile App Initialization
         nimiq = await init();
         
-        // Success: We are in the Mobile App
         if(payBtn) {
-            payBtn.innerHTML = 'Play via Nimiq Pay (Mobile)';
+            payBtn.innerHTML = 'Join Free via Nimiq Pay';
             payBtn.disabled = false;
         }
-        if(hubBtn) hubBtn.style.display = 'none'; // Hide Desktop Button
+        if(hubBtn) hubBtn.style.display = 'none'; 
         
-        if(statusText) statusText.innerText = "Nimiq Pay connected.";
+        if(statusText) statusText.innerText = "Nimiq connected.";
         if(statusSpinner) statusSpinner.style.display = 'none';
     } catch (error) {
         console.log("SDK Init Error (Desktop detected):", error);
         
-        // Fallback: We are on Desktop / Web Browser
-        if(payBtn) payBtn.style.display = 'none'; // Hide Mobile Button
+        if(payBtn) payBtn.style.display = 'none'; 
         
         if(hubBtn) {
-            hubBtn.style.display = 'block'; // Show Desktop Button
+            hubBtn.style.display = 'block'; 
+            hubBtn.innerHTML = 'Join Free via Nimiq Hub';
             hubBtn.addEventListener('click', payWithHub);
         }
         
-        if(statusText) statusText.innerText = "Ready to play via Desktop.";
+        if(statusText) statusText.innerText = "Ready to play on Desktop.";
         if(statusSpinner) statusSpinner.style.display = 'none';
     }
 }
 
-// Helper to re-enable UI on failure
 function resetUIOnError(msg) {
     if(statusText) statusText.innerText = msg;
     if(statusSpinner) statusSpinner.style.display = 'none';
     if(hubBtn) {
         hubBtn.disabled = false;
-        hubBtn.innerText = 'Play via Nimiq Hub (Desktop)';
+        hubBtn.innerText = 'Join Free via Nimiq Hub';
     }
     if(payBtn) {
         payBtn.disabled = false;
-        payBtn.innerText = 'Play via Nimiq Pay (Mobile)';
+        payBtn.innerText = 'Join Free via Nimiq Pay';
     }
     payoutModal.style.display = 'none';
 }
@@ -267,57 +256,48 @@ async function payWithHub() {
         
         let userAddress = localStorage.getItem('nimiq_address');
         if (!userAddress) {
+            // We MUST run chooseAddress so we know where to send the real NIM payout!
             const account = await hubApi.chooseAddress({ appName: 'Cells.io' });
             userAddress = account.address;
             localStorage.setItem('nimiq_address', userAddress);
         }
 
-        const txRequest = {
-            appName: 'Cells.io',
-            recipient: SERVER_WALLET,
-            value: 100000, // 1 NIM
-            fee: 0,
-            sender: userAddress,
-            extraData: new Uint8Array(new TextEncoder().encode(socket.id))
-        };
-
-        const txResult = await hubApi.checkout(txRequest);
+        if(statusText) statusText.innerText = "Deploying...";
         
-        if(statusText) statusText.innerText = "Transaction confirmed. Deploying...";
-        
+        // Emitting a mock txHash to bypass payment, but attaching their REAL address for the payout
         socket.emit('joinGame', { 
-            txHash: txResult.hash || txResult.transactionHash || txResult, 
+            txHash: 'free_entry_' + Math.random().toString(36).substring(7), 
             walletAddress: userAddress 
         });
 
     } catch (e) {
         console.error(e);
-        resetUIOnError("Transaction failed or cancelled.");
+        resetUIOnError("Login failed or cancelled.");
     }
 }
 
 if(payBtn) {
     payBtn.addEventListener('click', async () => {
         if (!socket.id) return resetUIOnError("Disconnected from server.");
-        if (!nimiq) return;
-
+        
         payBtn.disabled = true;
-        if(statusText) statusText.innerText = "Awaiting signature...";
+        if(statusText) statusText.innerText = "Deploying...";
         if(statusSpinner) statusSpinner.style.display = 'inline-block';
 
         try {
-            const accounts = await nimiq.listAccounts();
-            if (accounts.length === 0) throw new Error("No accounts found");
-            playerAddress = accounts[0];
+            let address = null;
+            if (nimiq) {
+                // Must fetch their account to send real rewards to
+                const accounts = await nimiq.listAccounts();
+                if (accounts.length > 0) address = accounts[0];
+            }
+            
+            if (!address) throw new Error("Could not detect Nimiq wallet address for payouts.");
 
-            const txHash = await nimiq.sendBasicTransactionWithData({
-                recipient: SERVER_WALLET,
-                value: 100000,
-                data: socket.id
+            socket.emit('joinGame', { 
+                txHash: 'free_entry_' + Math.random().toString(36).substring(7), 
+                walletAddress: address 
             });
-
-            if(statusText) statusText.innerText = "Transaction confirmed. Deploying...";
-            socket.emit('joinGame', { txHash: txHash, walletAddress: playerAddress });
             
             setTimeout(() => {
                 if (!isGameRunning && statusText.innerText.includes("Deploying")) {
@@ -326,8 +306,8 @@ if(payBtn) {
             }, 8000);
 
         } catch (e) {
-            console.error("Transaction error:", e);
-            resetUIOnError("Transaction failed or aborted.");
+            console.error("Connection error:", e);
+            resetUIOnError("Failed to join.");
         }
     });
 }
@@ -343,7 +323,6 @@ socket.on('disconnect', () => {
     if (isGameRunning) showGameOver('Connection Lost', 'You were disconnected.', 0, 0, false);
 });
 socket.on('connect_error', () => resetUIOnError("Server connection failed. Retrying..."));
-
 socket.on('error', (err) => resetUIOnError(err.message || err || "Game server error."));
 socket.on('joinError', (err) => resetUIOnError(err.message || err || "Failed to join game."));
 
@@ -362,7 +341,6 @@ socket.on('gameStarted', (player) => {
     interpolatedPlayers = {};
 
     resizeCanvas();
-
     if (animationFrameId) cancelAnimationFrame(animationFrameId);
     renderLoop();
 });
@@ -385,7 +363,6 @@ socket.on('gameState', (state) => {
 
 socket.on('playerCount', (count) => { if (statPlayers) statPlayers.innerText = count; });
 
-// TRIGGER LOADING OVERLAY
 socket.on('escaping', () => {
     payoutModal.style.display = 'flex';
     isGameRunning = false; 
@@ -406,25 +383,13 @@ socket.on('gameOver', (data) => {
 // UNIFIED INPUT HANDLING (Mouse & Touch)
 // ==========================================
 window.addEventListener('mousemove', (e) => {
-    if (isGameRunning) {
-        targetX = e.clientX;
-        targetY = e.clientY;
-    }
+    if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; }
 });
-
 window.addEventListener('touchstart', (e) => {
-    if (isGameRunning) {
-        targetX = e.touches[0].clientX;
-        targetY = e.touches[0].clientY;
-    }
+    if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; }
 }, { passive: false });
-
 window.addEventListener('touchmove', (e) => {
-    if (isGameRunning) {
-        e.preventDefault(); 
-        targetX = e.touches[0].clientX;
-        targetY = e.touches[0].clientY;
-    }
+    if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; }
 }, { passive: false });
 
 // ==========================================
