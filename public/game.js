@@ -121,6 +121,7 @@ let targetX = cw / 2;
 let targetY = ch / 2;
 let localAngle = 0;
 let interpolatedPlayers = {};
+let hasInput = false; // Tracks if mobile/desktop has made any initial movement interaction
 
 function stringToColor(str) {
     let hash = 0;
@@ -202,7 +203,7 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 
 // ==========================================
-// NIMIQ SDK SETUP (FREE ENTRY WITH REAL ADDRESSES)
+// NIMIQ SDK SETUP
 // ==========================================
 async function setupMiniApp() {
     try {
@@ -256,7 +257,6 @@ async function payWithHub() {
         
         let userAddress = localStorage.getItem('nimiq_address');
         if (!userAddress) {
-            // We MUST run chooseAddress so we know where to send the real NIM payout!
             const account = await hubApi.chooseAddress({ appName: 'Cells.io' });
             userAddress = account.address;
             localStorage.setItem('nimiq_address', userAddress);
@@ -264,7 +264,6 @@ async function payWithHub() {
 
         if(statusText) statusText.innerText = "Deploying...";
         
-        // Emitting a mock txHash to bypass payment, but attaching their REAL address for the payout
         socket.emit('joinGame', { 
             txHash: 'free_entry_' + Math.random().toString(36).substring(7), 
             walletAddress: userAddress 
@@ -287,7 +286,6 @@ if(payBtn) {
         try {
             let address = null;
             if (nimiq) {
-                // Must fetch their account to send real rewards to
                 const accounts = await nimiq.listAccounts();
                 if (accounts.length > 0) address = accounts[0];
             }
@@ -330,6 +328,7 @@ socket.on('gameStarted', (player) => {
     myId = player.id;
     isGameRunning = true;
     lastBalance = 0;
+    hasInput = false; // Reset interaction flag on spawn
     payoutModal.style.display = 'none';
 
     if(menu) menu.style.display = 'none';
@@ -383,13 +382,13 @@ socket.on('gameOver', (data) => {
 // UNIFIED INPUT HANDLING (Mouse & Touch)
 // ==========================================
 window.addEventListener('mousemove', (e) => {
-    if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; }
+    if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; hasInput = true; }
 });
 window.addEventListener('touchstart', (e) => {
-    if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; }
+    if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; hasInput = true; }
 }, { passive: false });
 window.addEventListener('touchmove', (e) => {
-    if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; }
+    if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; hasInput = true; }
 }, { passive: false });
 
 // ==========================================
@@ -631,8 +630,8 @@ function renderLoop() {
             if (!interpolatedPlayers[id]) {
                 interpolatedPlayers[id] = { ...serverP };
             } else {
-                interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.15;
-                interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.15;
+                interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.3;
+                interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.3;
                 interpolatedPlayers[id].balance = serverP.balance;
                 interpolatedPlayers[id].length = serverP.length;
             }
@@ -644,21 +643,43 @@ function renderLoop() {
 
     const me = interpolatedPlayers[myId];
     if (me) {
-        const screenPlayerX = cw / 2 + (me.x - camera.x) * camera.scale;
-        const screenPlayerY = ch / 2 + (me.y - camera.y) * camera.scale;
-        const dx = targetX - screenPlayerX;
-        const dy = targetY - screenPlayerY;
-        localAngle = Math.atan2(dy, dx);
+        if (!hasInput) {
+            // FIX: If the mobile user hasn't touched the screen yet, instantly lock the 
+            // camera coordinate directly over the cell. No visual lag, no weird calculated vectors.
+            camera.x = me.x;
+            camera.y = me.y;
+        } else {
+            // Normal game tracking calculations run once input is active
+            const screenPlayerX = cw / 2 + (me.x - camera.x) * camera.scale;
+            const screenPlayerY = ch / 2 + (me.y - camera.y) * camera.scale;
+            
+            const dx = targetX - screenPlayerX;
+            const dy = targetY - screenPlayerY;
+            
+            const distance = Math.hypot(dx, dy);
+            const cellRadiusOnScreen = getPlayerRadius(me) * camera.scale;
 
-        const now = Date.now();
-        if (now - lastEmitTime > 33) {
-            lastEmitTime = now;
-            socket.emit('input', { angle: localAngle });
+            const isHoveringCenter = distance < (cellRadiusOnScreen * 0.25);
+            
+            if (!isHoveringCenter) {
+                localAngle = Math.atan2(dy, dx);
+            }
+
+            const now = Date.now();
+            if (now - lastEmitTime > 40) {
+                lastEmitTime = now;
+                socket.emit('input', { 
+                    angle: localAngle,
+                    stopMovement: isHoveringCenter
+                });
+            }
+
+            // Smoothly move the camera along with the player cell
+            camera.x += (me.x - camera.x) * 0.1;
+            camera.y += (me.y - camera.y) * 0.1;
         }
 
-        camera.x += (me.x - camera.x) * 0.1;
-        camera.y += (me.y - camera.y) * 0.1;
-        const targetScale = Math.max(0.15, 40 / getPlayerRadius(me));
+        const targetScale = Math.max(0.45, 55 / getPlayerRadius(me));
         camera.scale += (targetScale - camera.scale) * 0.05;
     }
 

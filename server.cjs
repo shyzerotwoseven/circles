@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const env =require('dotenv').config();
+const env = require('dotenv').config();
 
 const Nimiq = require('@nimiq/core');
 const { KeyPair, ClientConfiguration, Client, Address, SerialBuffer, TransactionBuilder } = Nimiq;
@@ -29,6 +29,10 @@ app.get('/', (req, res) => {
 let nimiqClient = null;
 let serverKeyPair = null;
 let serverAddress = null;
+
+function getPlayerHitbox(player) {
+    return Math.max(15, Math.sqrt((player.length || player.balance * 100 || 10)) * 5);
+}
 
 const serverHex = process.env.HEX;
 
@@ -60,10 +64,9 @@ const MAP_SIZE = 2000;
 const NIM_PER_FOOD = 0.001;
 const ENTRY_FEE_LUNA = 100000n;
 
-const PLAYER_RADIUS = 12;
 const FOOD_RADIUS = 6;
-const SPEED = 6;
-const TICK_RATE = 50;
+const SPEED = 8; // heavily increased base speed
+const TICK_RATE = 30; // faster tick rate for smoother server loop (approx 33 TPS)
 
 const EXIT_GATE = { x: MAP_SIZE / 2, y: MAP_SIZE / 2, radius: 40 };
 
@@ -205,6 +208,9 @@ setInterval(() => {
         playerList.forEach(player => {
             if (!player.alive) return;
 
+            // Calculate the player's actual dynamic size on the server
+            const currentRadius = getPlayerHitbox(player);
+
             // Save position to history
             player.history.unshift({ x: player.x, y: player.y });
 
@@ -212,8 +218,8 @@ setInterval(() => {
             player.x += Math.cos(player.angle) * player.speed;
             player.y += Math.sin(player.angle) * player.speed;
 
-            // Clamp to map (soft boundary)
-            const margin = PLAYER_RADIUS;
+            // Clamp to map (soft boundary) using dynamic radius
+            const margin = currentRadius;
             if (player.x < margin) player.x = margin;
             if (player.x > MAP_SIZE - margin) player.x = MAP_SIZE - margin;
             if (player.y < margin) player.y = margin;
@@ -241,21 +247,21 @@ setInterval(() => {
                 return;
             }
 
-            // Food collision
+            // Food collision using dynamic radius
             for (let i = foods.length - 1; i >= 0; i--) {
                 const f = foods[i];
                 const dist = Math.hypot(player.x - f.x, player.y - f.y);
-                if (dist < PLAYER_RADIUS + FOOD_RADIUS) {
+                if (dist < currentRadius + FOOD_RADIUS) {
                     foods.splice(i, 1);
-                    player.length += 2;
+                    player.length += 6; // Buffed growth per food
                     player.balance += NIM_PER_FOOD;
                     spawnFood();
                 }
             }
 
-            // Exit gate collision
+            // Exit gate collision using dynamic radius
             const distToGate = Math.hypot(player.x - EXIT_GATE.x, player.y - EXIT_GATE.y);
-            if (distToGate < EXIT_GATE.radius + PLAYER_RADIUS) {
+            if (distToGate < EXIT_GATE.radius + currentRadius) {
                 cashoutPlayer(player.id);
                 return;
             }
@@ -264,6 +270,7 @@ setInterval(() => {
         // PvP Collision
         playerList.forEach(player => {
             if (!player.alive) return;
+            const currentRadius = getPlayerHitbox(player);
 
             playerList.forEach(other => {
                 if (other.id === player.id || !other.alive) return;
@@ -271,8 +278,10 @@ setInterval(() => {
                 if (other.segments && other.segments.length > 0) {
                     for (let segment of other.segments) {
                         const dist = Math.hypot(player.x - segment.x, player.y - segment.y);
-                        if (dist < PLAYER_RADIUS * 1.3) {
+                        if (dist < currentRadius * 1.3) {
+                            // Player absorbs the exact amount of tokens and visual mass the opponent is worth
                             other.balance += player.balance;
+                            other.length += player.length;
                             killPlayer(player.id, `Eliminated by Player ${other.id.slice(0, 4)}!`);
                             break;
                         }
