@@ -222,7 +222,6 @@ async function payWithHub() {
 
         currentWallet = userAddress;
         socket.emit('check_user', currentWallet);
-
     } catch (e) { resetUIOnError("Login failed or cancelled."); }
 }
 
@@ -275,7 +274,6 @@ socket.on('gameStarted', (player) => {
     if(ui) ui.style.display = 'flex';
     if(minimap) minimap.style.display = 'block';
     
-    // Ensure leaderboard moves into game container view mentally, though it remains absolute
     if(leaderboard) {
         gameContainer.appendChild(leaderboard);
         leaderboard.style.zIndex = '105';
@@ -290,8 +288,40 @@ socket.on('gameStarted', (player) => {
     renderLoop();
 });
 
+// CLIENT-SIDE PREDICTION & RECONCILIATION
 socket.on('gameState', (state) => {
     gameState = state;
+
+    if (gameState.players) {
+        for (let id in gameState.players) {
+            let serverP = gameState.players[id];
+            
+            if (!interpolatedPlayers[id]) { 
+                interpolatedPlayers[id] = { ...serverP }; 
+            } else if (id === myId) {
+                const dist = Math.hypot(serverP.x - interpolatedPlayers[id].x, serverP.y - interpolatedPlayers[id].y);
+                if (dist > 60) {
+                    interpolatedPlayers[id].x = serverP.x;
+                    interpolatedPlayers[id].y = serverP.y;
+                } else {
+                    interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.1;
+                    interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.1;
+                }
+                interpolatedPlayers[id].balance = serverP.balance;
+                interpolatedPlayers[id].length = serverP.length;
+                interpolatedPlayers[id].isBoosting = serverP.isBoosting;
+            } else {
+                interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.3;
+                interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.3;
+                interpolatedPlayers[id].balance = serverP.balance;
+                interpolatedPlayers[id].length = serverP.length;
+                interpolatedPlayers[id].isBoosting = serverP.isBoosting;
+            }
+        }
+        for (let id in interpolatedPlayers) { 
+            if (!gameState.players[id]) delete interpolatedPlayers[id]; 
+        }
+    }
 
     if (gameState.players && gameState.players[myId]) {
         const newBalance = gameState.players[myId].balance;
@@ -323,6 +353,11 @@ socket.on('gameOver', (data) => {
 window.addEventListener('mousemove', (e) => { if (isGameRunning) { targetX = e.clientX; targetY = e.clientY; } });
 window.addEventListener('touchstart', (e) => { if (isGameRunning) { targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; } }, { passive: false });
 window.addEventListener('touchmove', (e) => { if (isGameRunning) { e.preventDefault(); targetX = e.touches[0].clientX; targetY = e.touches[0].clientY; } }, { passive: false });
+window.addEventListener('keydown', (e) => {
+    if (isGameRunning && e.code === 'Space') {
+        socket.emit('boost');
+    }
+});
 
 // UI & PARTICLES
 function renderLeaderboard() {
@@ -459,6 +494,29 @@ function drawCell(ctx, player, isMe) {
     const r = getPlayerRadius(player);
     const color = isMe ? '#6366f1' : stringToColor(player.id);
     
+    // BOOST SHADER & PARTICLES
+    if (player.isBoosting) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, r + 12 + Math.random() * 4, 0, Math.PI * 2);
+        
+        const grad = ctx.createRadialGradient(player.x, player.y, r, player.x, player.y, r + 16);
+        grad.addColorStop(0, isMe ? 'rgba(255, 255, 255, 0.7)' : 'rgba(255, 100, 100, 0.5)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.restore();
+        
+        if (Math.random() > 0.6) {
+            spawnParticles(
+                player.x - Math.cos(player.angle || 0) * r, 
+                player.y - Math.sin(player.angle || 0) * r, 
+                'rgba(255, 255, 255, 0.6)', 1
+            );
+        }
+    }
+
     if (isMe) {
         ctx.save();
         ctx.translate(player.x, player.y);
@@ -524,32 +582,33 @@ function drawMinimap() {
 function renderLoop() {
     if (!isGameRunning) return;
 
-    if (gameState && gameState.players) {
-        for (let id in gameState.players) {
-            let serverP = gameState.players[id];
-            if (!interpolatedPlayers[id]) { interpolatedPlayers[id] = { ...serverP }; } 
-            else {
-                interpolatedPlayers[id].x += (serverP.x - interpolatedPlayers[id].x) * 0.3;
-                interpolatedPlayers[id].y += (serverP.y - interpolatedPlayers[id].y) * 0.3;
-                interpolatedPlayers[id].balance = serverP.balance;
-                interpolatedPlayers[id].length = serverP.length;
-            }
-        }
-        for (let id in interpolatedPlayers) { if (!gameState.players[id]) delete interpolatedPlayers[id]; }
-    }
-
     const me = interpolatedPlayers[myId];
     if (me) {
+        // CLIENT-SIDE PREDICTION PHYSICS
+        const r = getPlayerRadius(me);
+        let speed = Math.min(8, 2.5 + (r * 0.055));
+        if (me.isBoosting) speed *= 2; 
+
         const screenPlayerX = cw / 2 + (me.x - camera.x) * camera.scale;
         const screenPlayerY = ch / 2 + (me.y - camera.y) * camera.scale;
         localAngle = Math.atan2(targetY - screenPlayerY, targetX - screenPlayerX);
 
+        me.x += Math.cos(localAngle) * speed;
+        me.y += Math.sin(localAngle) * speed;
+
+        const margin = r;
+        me.x = Math.max(margin, Math.min(MAP_SIZE - margin, me.x));
+        me.y = Math.max(margin, Math.min(MAP_SIZE - margin, me.y));
+
         const now = Date.now();
-        if (now - lastEmitTime > 15) { lastEmitTime = now; socket.emit('input', { angle: localAngle }); }
+        if (now - lastEmitTime > 15) { 
+            lastEmitTime = now; 
+            socket.emit('input', { angle: localAngle }); 
+        }
 
         camera.x += (me.x - camera.x) * 0.1;
         camera.y += (me.y - camera.y) * 0.1;
-        const targetScale = Math.max(0.45, 55 / getPlayerRadius(me));
+        const targetScale = Math.max(0.45, 55 / r);
         camera.scale += (targetScale - camera.scale) * 0.05;
     }
 

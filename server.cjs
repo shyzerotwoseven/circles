@@ -67,10 +67,6 @@ let nimiqClient = null;
 let serverKeyPair = null;
 let serverAddress = null;
 
-function getPlayerHitbox(player) {
-    return Math.max(15, Math.sqrt((player.length || player.balance * 100 || 10)) * 5);
-}
-
 const serverHex = process.env.HEX || "";
 
 async function initNimiq() {
@@ -106,6 +102,32 @@ const EXIT_GATE = { x: MAP_SIZE / 2, y: MAP_SIZE / 2, radius: 40 };
 let players = {};
 let foods = [];
 
+function getPlayerHitbox(player) {
+    return Math.max(15, Math.sqrt((player.length || player.balance * 100 || 10)) * 5);
+}
+
+// SAFE SPAWN LOGIC (Prevents instant death on spawn)
+function getSafeSpawnPosition() {
+    const padding = 100;
+    for (let attempts = 0; attempts < 15; attempts++) {
+        const x = padding + Math.random() * (MAP_SIZE - padding * 2);
+        const y = padding + Math.random() * (MAP_SIZE - padding * 2);
+        let safe = true;
+        
+        Object.values(players).forEach(p => {
+            if (p.alive && Math.hypot(p.x - x, p.y - y) < 400) {
+                safe = false;
+            }
+        });
+        
+        if (safe) return { x, y };
+    }
+    return { 
+        x: padding + Math.random() * (MAP_SIZE - padding * 2), 
+        y: padding + Math.random() * (MAP_SIZE - padding * 2) 
+    };
+}
+
 for (let i = 0; i < 100; i++) spawnFood();
 
 function spawnFood() {
@@ -116,8 +138,52 @@ function spawnFood() {
     });
 }
 
-function getPlayerCount() { return Object.keys(players).length; }
-function broadcastPlayerCount() { io.emit('playerCount', getPlayerCount()); }
+function getRealPlayerCount() { 
+    return Object.values(players).filter(p => !p.isBot).length; 
+}
+function broadcastPlayerCount() { io.emit('playerCount', getRealPlayerCount()); }
+
+// ==========================================
+// BOT MANAGEMENT
+// ==========================================
+const MAX_BOTS = 3;
+const BOT_NAMES = ["ProSniper", "CryptoKing", "NimiqFan", "Shadow", "Ghost", "NoobSlayer", "Alpha", "Guest_928", "SnakeBoss"];
+
+function spawnBot() {
+    const botName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+    const id = botName + '_' + Math.random().toString(36).substring(2, 6);
+    const spawnPos = getSafeSpawnPosition();
+    
+    players[id] = {
+        id: id,
+        walletAddress: 'BOT_WALLET',
+        x: spawnPos.x,
+        y: spawnPos.y,
+        angle: Math.random() * Math.PI * 2,
+        speed: 8,
+        history: [],
+        segments: [],
+        length: 12,
+        balance: 0,
+        alive: true,
+        isBot: true,
+        displayName: botName,
+        lastBoost: 0,
+        boostEndTime: 0
+    };
+    console.log(`🤖 Bot activated: ${id}`);
+}
+
+setInterval(() => {
+    const realCount = getRealPlayerCount();
+    const activeBots = Object.values(players).filter(p => p.isBot);
+
+    if (realCount > 0 && realCount < 5) {
+        if (activeBots.length < MAX_BOTS) spawnBot();
+    } else {
+        activeBots.forEach(bot => { delete players[bot.id]; });
+    }
+}, 2000);
 
 // ==========================================
 // SOCKET HANDLERS
@@ -125,19 +191,14 @@ function broadcastPlayerCount() { io.emit('playerCount', getPlayerCount()); }
 io.on('connection', (socket) => {
     console.log(`✅ Player connected: ${socket.id}`);
     broadcastPlayerCount();
-    broadcastLeaderboard(); // Send leaderboard immediately on connect
+    broadcastLeaderboard();
 
     socket.on('check_user', async (walletAddress) => {
         try {
             const [rows] = await pool.query('SELECT username FROM leaderboard WHERE wallet_address = ?', [walletAddress]);
-            if (rows.length > 0) {
-                socket.emit('user_status', { exists: true, username: rows[0].username });
-            } else {
-                socket.emit('user_status', { exists: false });
-            }
-        } catch (err) {
-            console.error('Error checking user:', err);
-        }
+            if (rows.length > 0) socket.emit('user_status', { exists: true, username: rows[0].username });
+            else socket.emit('user_status', { exists: false });
+        } catch (err) { console.error('Error checking user:', err); }
     });
 
     socket.on('register_user', async (data) => {
@@ -148,46 +209,56 @@ io.on('connection', (socket) => {
             );
             console.log(`📝 Registered user: ${data.username}`);
             broadcastLeaderboard(); 
-        } catch (err) {
-            console.error('Error registering user:', err);
-        }
+        } catch (err) { console.error('Error registering user:', err); }
     });
 
     socket.on('joinGame', async (data) => {
         try {
             if (!data || !data.walletAddress || players[socket.id]) return;
 
-            const padding = 100;
-            const spawnX = padding + Math.random() * (MAP_SIZE - padding * 2);
-            const spawnY = padding + Math.random() * (MAP_SIZE - padding * 2);
+            const spawnPos = getSafeSpawnPosition();
 
             players[socket.id] = {
                 id: socket.id,
                 walletAddress: data.walletAddress,
-                x: spawnX,
-                y: spawnY,
+                x: spawnPos.x,
+                y: spawnPos.y,
                 angle: Math.random() * Math.PI * 2,
                 speed: 8,
                 history: [],
                 segments: [],
                 length: 8,
                 balance: 0,
-                alive: true
+                alive: true,
+                isBot: false,
+                displayName: "Player",
+                lastBoost: 0,
+                boostEndTime: 0
             };
 
-            console.log(`🎮 Player ${socket.id} joined at (${spawnX.toFixed(0)}, ${spawnY.toFixed(0)})`);
+            console.log(`🎮 Player ${socket.id} joined at (${spawnPos.x.toFixed(0)}, ${spawnPos.y.toFixed(0)})`);
             socket.emit('gameStarted', players[socket.id]);
             broadcastPlayerCount();
-        } catch (err) {
-            console.error(`Error in joinGame:`, err);
-        }
+        } catch (err) { console.error(`Error in joinGame:`, err); }
     });
 
     socket.on('input', (data) => {
         const player = players[socket.id];
-        if (!player || !player.alive) return;
+        if (!player || !player.alive || player.isBot) return;
         if (data && typeof data.angle === 'number' && isFinite(data.angle)) {
             player.angle = data.angle;
+        }
+    });
+
+    // BOOST LISTENER
+    socket.on('boost', () => {
+        const player = players[socket.id];
+        const now = Date.now();
+        if (player && player.alive && !player.isBot) {
+            if (!player.lastBoost || now - player.lastBoost > 15000) {
+                player.lastBoost = now;
+                player.boostEndTime = now + 10000;
+            }
         }
     });
 
@@ -208,8 +279,61 @@ setInterval(() => {
         playerList.forEach(player => {
             if (!player.alive) return;
 
+            // --- BOT AI ---
+            if (player.isBot) {
+                const botHitbox = getPlayerHitbox(player);
+                let targetAngle = player.angle;
+                let nearestSmaller = null;
+                let distSmaller = Infinity;
+                let nearestLarger = null;
+                let distLarger = Infinity;
+
+                playerList.forEach(other => {
+                    if (other.id !== player.id && other.alive) {
+                        const dist = Math.hypot(player.x - other.x, player.y - other.y);
+                        const otherHitbox = getPlayerHitbox(other);
+                        if (botHitbox > otherHitbox) {
+                            if (dist < distSmaller) { distSmaller = dist; nearestSmaller = other; }
+                        } else {
+                            if (dist < distLarger) { distLarger = dist; nearestLarger = other; }
+                        }
+                    }
+                });
+
+                if (nearestLarger && distLarger < 400) {
+                    targetAngle = Math.atan2(player.y - nearestLarger.y, player.x - nearestLarger.x);
+                } else if (nearestSmaller && distSmaller < 500) {
+                    targetAngle = Math.atan2(nearestSmaller.y - player.y, nearestSmaller.x - player.x);
+                } else {
+                    let nearestFood = null;
+                    let distFood = Infinity;
+                    foods.forEach(f => {
+                        const dist = Math.hypot(player.x - f.x, player.y - f.y);
+                        if (dist < distFood) { distFood = dist; nearestFood = f; }
+                    });
+
+                    if (nearestFood) targetAngle = Math.atan2(nearestFood.y - player.y, nearestFood.x - player.x);
+                    else targetAngle += (Math.random() - 0.5) * 0.5;
+                }
+
+                const wallMargin = 150;
+                if (player.x < wallMargin) targetAngle = 0;
+                else if (player.x > MAP_SIZE - wallMargin) targetAngle = Math.PI;
+                if (player.y < wallMargin) targetAngle = Math.PI / 2;
+                else if (player.y > MAP_SIZE - wallMargin) targetAngle = -Math.PI / 2;
+
+                const angleDiff = targetAngle - player.angle;
+                const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+                player.angle += normalizedDiff * 0.15;
+            }
+
+            // --- MOVEMENT, BOOST & PHYSICS ---
             const currentRadius = getPlayerHitbox(player);
-            player.speed = Math.min(8, 2.5 + (currentRadius * 0.055));
+            let baseSpeed = Math.min(8, 2.5 + (currentRadius * 0.055));
+
+            player.isBoosting = Date.now() < player.boostEndTime;
+            if (player.isBoosting) baseSpeed *= 2;
+            player.speed = baseSpeed;
 
             player.history.unshift({ x: player.x, y: player.y });
             player.x += Math.cos(player.angle) * player.speed;
@@ -253,21 +377,43 @@ setInterval(() => {
             }
         });
 
+        // --- COMBAT COLLISION ---
+     // --- COMBAT COLLISION ---
+       // --- COMBAT COLLISION ---
         playerList.forEach(player => {
             if (!player.alive) return;
-            const currentRadius = getPlayerHitbox(player);
+            const playerRadius = getPlayerHitbox(player);
 
             playerList.forEach(other => {
+                if (!player.alive) return; 
                 if (other.id === player.id || !other.alive) return;
-                if (other.segments && other.segments.length > 0) {
-                    for (let segment of other.segments) {
-                        const dist = Math.hypot(player.x - segment.x, player.y - segment.y);
-                        if (dist < currentRadius * 1.3) {
-                            other.balance += player.balance;
-                            other.length += player.length;
-                            killPlayer(player.id, `Eliminated by Player ${other.id.slice(0, 4)}!`);
-                            break;
-                        }
+                
+                const otherRadius = getPlayerHitbox(other);
+
+                // CRITICAL FIX: We are now checking the distance between the two actual player centers.
+                // No more invisible segments/tails!
+                const dist = Math.hypot(player.x - other.x, player.y - other.y);
+                
+                // If the circles physically overlap significantly
+                if (dist < (playerRadius + otherRadius) * 0.85) {
+                    
+                    if (player.length > other.length) {
+                        // Player eats Other
+                        player.balance += other.balance;
+                        player.length += other.length;
+                        other.balance = 0; 
+                        other.length = 0;
+                        const killerName = player.isBot ? player.displayName : `Player ${player.id.slice(0, 4)}`;
+                        killPlayer(other.id, `Crushed by ${killerName}!`);
+                        
+                    } else if (other.length > player.length) {
+                        // Other eats Player
+                        other.balance += player.balance;
+                        other.length += player.length;
+                        player.balance = 0;
+                        player.length = 0;
+                        const killerName = other.isBot ? other.displayName : `Player ${other.id.slice(0, 4)}`;
+                        killPlayer(player.id, `Eaten by ${killerName}!`);
                     }
                 }
             });
@@ -277,7 +423,9 @@ setInterval(() => {
         Object.values(players).forEach(p => {
             sanitizedPlayers[p.id] = {
                 id: p.id, x: p.x, y: p.y, angle: p.angle,
-                segments: p.segments, length: p.length, balance: p.balance
+                segments: p.segments, length: p.length, balance: p.balance,
+                isBot: p.isBot, displayName: p.displayName,
+                isBoosting: p.isBoosting 
             };
         });
 
@@ -293,14 +441,25 @@ setInterval(() => {
 function killPlayer(id, message) {
     const player = players[id];
     if (!player) return;
+    
     player.alive = false;
-    io.to(id).emit('gameOver', { message: message || "You died! Tokens lost.", playerId: id });
+    
+    if (!player.isBot) {
+        io.to(id).emit('gameOver', { message: message || "You died! Tokens lost.", playerId: id });
+    }
+    
     setTimeout(() => { delete players[id]; broadcastPlayerCount(); }, 1000);
 }
 
 async function cashoutPlayer(id) {
     const player = players[id];
     if (!player) return;
+
+    if (player.isBot) {
+        player.alive = false;
+        setTimeout(() => { delete players[id]; }, 1000);
+        return; 
+    }
 
     io.to(id).emit('escaping');
     player.alive = false; 
@@ -310,9 +469,7 @@ async function cashoutPlayer(id) {
         try {
             await pool.query('UPDATE leaderboard SET earned = earned + ? WHERE wallet_address = ?', [player.balance, player.walletAddress]);
             broadcastLeaderboard();
-        } catch (err) {
-            console.error('Failed to update DB on cashout:', err);
-        }
+        } catch (err) { console.error('Failed to update DB on cashout:', err); }
     }
 
     if (nimiqClient && player.balance > 0) {
